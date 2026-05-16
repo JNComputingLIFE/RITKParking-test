@@ -78,7 +78,8 @@ function formatDateTime(value) {
 }
 
 function spotVisualStatus(spot) {
-  if (!spot.is_available) return "unavailable";
+  const isAvailable = spot.effective_is_available ?? spot.is_available;
+  if (!isAvailable) return "unavailable";
   if (spot.is_reported_occupied) return "reported";
   if (spot.current_reservation_status === "pending") return "pending";
   if (spot.current_reservation_status === "approved") return "reserved";
@@ -515,24 +516,28 @@ function SpotModal({
   user,
   spot,
   selectedDate,
-  reservationForm,
-  recurringForm,
-  onReservationChange,
-  onRecurringChange,
   onClose,
-  onReserve,
-  onCreateRecurring,
   onToggleAvailability,
   onReportOccupied,
-  loading,
+  onLoadReservations,
+  onResolveReport,
+  spotReservations,
+  reservationsLoading,
+  detailsLoading,
   message,
   error
 }) {
   if (!spot) return null;
 
   const status = spotVisualStatus(spot);
-  const isAvailable = status === "available";
+  const isCurrentlyUnavailable = status === "unavailable";
   const [reportForm, setReportForm] = useState({ licensePlate: "", description: "" });
+  const [adminAction, setAdminAction] = useState("menu");
+
+  useEffect(() => {
+    setAdminAction("menu");
+    setReportForm({ licensePlate: "", description: "" });
+  }, [spot?.id]);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -546,146 +551,110 @@ function SpotModal({
         </div>
 
         <StatusPill value={status} />
-        {spot.current_reserved_by_name ? (
+        {detailsLoading ? <div className="inline-message warning">Loading reservation details...</div> : null}
+        {isAdminRole(user.role) && !detailsLoading ? (
+          <>
+            {adminAction === "menu" ? (
+              <div className="action-row align-start">
+                <button className="secondary-button" type="button" onClick={() => setAdminAction("report")}>Report Spot</button>
+                <button className="secondary-button" type="button" onClick={() => {
+                  setAdminAction("reservations");
+                  onLoadReservations?.(spot.id);
+                }}>View Reservations</button>
+                <button className="secondary-button" type="button" onClick={onToggleAvailability}>
+                  {isCurrentlyUnavailable ? "Make Available" : "Make Unavailable"}
+                </button>
+              </div>
+            ) : null}
+
+            {adminAction === "report" ? (
+              <form className="stack-form" onSubmit={async (event) => {
+                event.preventDefault();
+                await onReportOccupied({
+                  spotId: spot.id,
+                  licensePlate: reportForm.licensePlate,
+                  description: reportForm.description
+                });
+                setReportForm({ licensePlate: "", description: "" });
+                setAdminAction("menu");
+              }}>
+                <h4>Report Spot</h4>
+                <p><strong>Parking lot:</strong> {formatLotLabel(spot.lot_type)}</p>
+                <p><strong>Parking spot:</strong> {spot.code}</p>
+                <label>
+                  License plate
+                  <input
+                    value={reportForm.licensePlate}
+                    onChange={(event) => setReportForm((current) => ({ ...current, licensePlate: event.target.value }))}
+                    placeholder="Optional"
+                  />
+                </label>
+                <label>
+                  Description
+                  <input
+                    value={reportForm.description}
+                    onChange={(event) => setReportForm((current) => ({ ...current, description: event.target.value }))}
+                    placeholder="Optional"
+                  />
+                </label>
+                <div className="action-row align-start">
+                  <button className="secondary-button" type="submit">Save report</button>
+                  <button className="ghost-button" type="button" onClick={() => setAdminAction("menu")}>Back</button>
+                </div>
+              </form>
+            ) : null}
+
+            {adminAction === "reservations" ? (
+              <div className="stack-form">
+                <h4>Reservations for {spot.code}</h4>
+                {reservationsLoading ? <p>Loading reservations...</p> : null}
+                {!reservationsLoading && spotReservations.length ? (
+                  <div className="compact-bookings-list">
+                    {spotReservations.map((reservation) => (
+                      <div className="compact-booking-row" key={reservation.id}>
+                        <span>#{reservation.id}</span>
+                        <span>{reservation.user_name}</span>
+                        <span>{reservation.user_email}</span>
+                        <span>{getRoleLabel(reservation.user_role)}</span>
+                        <span>{formatDateTime(reservation.start_time)}</span>
+                        <span>{formatDateTime(reservation.end_time)}</span>
+                        <span>{reservation.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {!reservationsLoading && !spotReservations.length ? <p>No current or upcoming reservations.</p> : null}
+                <div className="action-row align-start">
+                  <button className="ghost-button" type="button" onClick={() => setAdminAction("menu")}>Back</button>
+                </div>
+              </div>
+            ) : null}
+
+            {spot.is_reported_occupied ? (
+              <button className="mini-button danger" type="button" onClick={onResolveReport}>
+                Resolve Report
+              </button>
+            ) : null}
+          </>
+        ) : null}
+        {!isAdminRole(user.role) && spot.current_reserved_by_name ? (
           <p><strong>Reserved by:</strong> {spot.current_reserved_by_name}</p>
         ) : null}
-        {spot.current_reserved_until ? (
+        {!isAdminRole(user.role) && spot.current_reserved_until ? (
           <p><strong>Reserved until:</strong> {formatDateTime(spot.current_reserved_until)}</p>
         ) : null}
         {spot.is_reported_occupied ? (
           <div className="inline-message warning">This spot was reported occupied.</div>
         ) : null}
 
-        {!isAvailable ? (
-          <div className="inline-message error">
-            This spot is not currently open for reservation for the selected date.
-          </div>
-        ) : null}
-
         {error ? <div className="inline-message error">{error}</div> : null}
         {message ? <div className="inline-message success">{message}</div> : null}
-
-        {isAvailable ? (
-          <form className="stack-form" onSubmit={onReserve}>
-            <h4>Choose your time slot</h4>
-            <label>
-              Start time
-              <input
-                type="time"
-                step="1800"
-                value={reservationForm.startClock}
-                onChange={(event) => onReservationChange("startClock", event.target.value)}
-              />
-            </label>
-            <label>
-              End time
-              <input
-                type="time"
-                step="1800"
-                value={reservationForm.endClock}
-                onChange={(event) => onReservationChange("endClock", event.target.value)}
-              />
-            </label>
-            <button className="primary-button" type="submit" disabled={loading}>
-              {loading ? "Saving..." : "Reserve spot"}
-            </button>
-          </form>
-        ) : null}
-
-        {isAvailable && !isStudentRole(user.role) ? (
-          <form className="stack-form recurring-form" onSubmit={onCreateRecurring}>
-            <h4>Recurring booking</h4>
-            <label>
-              Start time
-              <input
-                type="time"
-                step="1800"
-                value={recurringForm.startClock}
-                onChange={(event) => onRecurringChange("startClock", event.target.value)}
-              />
-            </label>
-            <label>
-              End time
-              <input
-                type="time"
-                step="1800"
-                value={recurringForm.endClock}
-                onChange={(event) => onRecurringChange("endClock", event.target.value)}
-              />
-            </label>
-            <label>
-              Semester start
-              <input
-                type="date"
-                value={recurringForm.semesterStart}
-                onChange={(event) => onRecurringChange("semesterStart", event.target.value)}
-              />
-            </label>
-            <label>
-              Semester end
-              <input
-                type="date"
-                value={recurringForm.semesterEnd}
-                onChange={(event) => onRecurringChange("semesterEnd", event.target.value)}
-              />
-            </label>
-            <label>
-              Recurrence type
-              <select
-                value={recurringForm.recurrenceType}
-                onChange={(event) => onRecurringChange("recurrenceType", event.target.value)}
-              >
-                <option value="weekly">Weekly</option>
-                <option value="semester">Semester-long</option>
-              </select>
-            </label>
-            <button className="secondary-button" type="submit" disabled={loading}>
-              {loading ? "Saving..." : "Save recurring slot"}
-            </button>
-          </form>
-        ) : null}
-
-        {isAdminRole(user.role) ? (
-          <>
-            <form className="stack-form recurring-form" onSubmit={async (event) => {
-              event.preventDefault();
-              await onReportOccupied({
-                spotId: spot.id,
-                licensePlate: reportForm.licensePlate,
-                description: reportForm.description
-              });
-              setReportForm({ licensePlate: "", description: "" });
-            }}>
-              <h4>Report occupied spot</h4>
-              <label>
-                License plate
-                <input
-                  value={reportForm.licensePlate}
-                  onChange={(event) => setReportForm((current) => ({ ...current, licensePlate: event.target.value }))}
-                  placeholder="Optional"
-                />
-              </label>
-              <label>
-                Comment
-                <input
-                  value={reportForm.description}
-                  onChange={(event) => setReportForm((current) => ({ ...current, description: event.target.value }))}
-                  placeholder="Optional"
-                />
-              </label>
-              <button className="secondary-button" type="submit">Save occupied report</button>
-            </form>
-            <button className="ghost-button full-width" onClick={onToggleAvailability}>
-              {spot.is_available ? "Mark unavailable" : "Mark available"}
-            </button>
-          </>
-        ) : null}
       </div>
     </div>
   );
 }
 
-function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring, onUpdateSpot, onReportSpot }) {
+function SecurityMapScreen({ user, spots, onUpdateSpot, onReportSpot }) {
   const todayValue = useMemo(() => formatDateValue(new Date()), []);
   const currentWeekStart = useMemo(() => getMonday(new Date()), []);
   const initialWeekStart = useMemo(() => {
@@ -699,33 +668,18 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
     return nextWeek;
   }, [currentWeekStart, todayValue]);
   const [weekStart, setWeekStart] = useState(initialWeekStart);
-  const [selectedLotType, setSelectedLotType] = useState("general");
+  const [selectedLotType, setSelectedLotType] = useState("all");
   const weekDates = useMemo(() => getWeekdays(weekStart), [weekStart]);
   const [selectedDate, setSelectedDate] = useState(
     weekDates.find((date) => date.value >= todayValue)?.value || weekDates[0]?.value || formatDateValue(new Date())
   );
   const [mapSpots, setMapSpots] = useState(spots);
   const [activeSpot, setActiveSpot] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [spotReservations, setSpotReservations] = useState([]);
+  const [reservationsLoading, setReservationsLoading] = useState(false);
+  const [mapLoading, setMapLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [reservationForm, setReservationForm] = useState({
-    startClock: "08:00",
-    endClock: isStaffLikeRole(user.role) ? "16:00" : "10:00"
-  });
-  const [recurringForm, setRecurringForm] = useState({
-    startClock: "08:00",
-    endClock: "16:00",
-    semesterStart: weekDates[0]?.value || formatDateValue(new Date()),
-    semesterEnd: weekDates[4]?.value || formatDateValue(new Date()),
-    recurrenceType: "weekly"
-  });
-
-  useEffect(() => {
-    if (selectedDate && recurringForm.semesterStart < selectedDate) {
-      setRecurringForm((current) => ({ ...current, semesterStart: selectedDate }));
-    }
-  }, [selectedDate, recurringForm.semesterStart]);
 
   useEffect(() => {
     if (!weekDates.some((date) => date.value === selectedDate && date.value >= todayValue)) {
@@ -751,10 +705,13 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
 
   async function refreshMapSpots(dateValue, lotType = selectedLotType) {
     try {
-      const nextSpots = await api.spots(dateValue, lotType);
+      setMapLoading(true);
+      const nextSpots = await api.spots(dateValue, lotType === "all" ? "" : lotType);
       setMapSpots(nextSpots);
     } catch (requestError) {
       setError(requestError.message);
+    } finally {
+      setMapLoading(false);
     }
   }
 
@@ -777,66 +734,29 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
     setError("");
   }
 
-  async function reserveSpot(event) {
-    event.preventDefault();
-    if (!activeSpot || !selectedDate) return;
-
-    setLoading(true);
-    setMessage("");
-    setError("");
-
+  async function loadSpotReservations(spotId) {
     try {
-      const response = await onCreateReservation({
-        spotId: activeSpot.id,
-        startTime: new Date(`${selectedDate}T${reservationForm.startClock}`).toISOString(),
-        endTime: new Date(`${selectedDate}T${reservationForm.endClock}`).toISOString()
-      });
-      await refreshMapSpots(selectedDate);
-      setMessage(`Reservation saved as ${response.status}.`);
+      setReservationsLoading(true);
+      const rows = await api.spotReservations(spotId);
+      setSpotReservations(rows);
     } catch (requestError) {
       setError(requestError.message);
+      setSpotReservations([]);
     } finally {
-      setLoading(false);
-    }
-  }
-
-  async function reserveRecurring(event) {
-    event.preventDefault();
-    if (!activeSpot || !selectedDate) return;
-
-    setLoading(true);
-    setMessage("");
-    setError("");
-
-    try {
-      const response = await onCreateRecurring({
-        spotId: activeSpot.id,
-        dayOfWeek: getDayOfWeek(selectedDate),
-        startTime: new Date(`${selectedDate}T${recurringForm.startClock}`).toISOString(),
-        endTime: new Date(`${selectedDate}T${recurringForm.endClock}`).toISOString(),
-        semesterStart: recurringForm.semesterStart,
-        semesterEnd: recurringForm.semesterEnd,
-        recurrenceType: recurringForm.recurrenceType
-      });
-      await refreshMapSpots(selectedDate);
-      setMessage(`Recurring ${response.recurrence_type} reservation created.`);
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setLoading(false);
+      setReservationsLoading(false);
     }
   }
 
   async function toggleAvailability() {
     if (!activeSpot) return;
     try {
-      const updated = await onUpdateSpot(activeSpot.id, {
-        isAvailable: !activeSpot.is_available,
-        notes: activeSpot.is_available ? "Marked unavailable by security." : "Reopened for reservations."
+      const currentlyUnavailable = spotVisualStatus(activeSpot) === "unavailable";
+      await api.updateSpotDailyAvailability(activeSpot.id, {
+        date: selectedDate,
+        isAvailable: currentlyUnavailable
       });
-      await refreshMapSpots(selectedDate);
-      setActiveSpot(updated);
-      setMessage(`Spot ${updated.code} updated.`);
+      await refreshMapSpots(selectedDate, selectedLotType);
+      setMessage(`Spot ${activeSpot.code} updated for ${selectedDate}.`);
       setError("");
     } catch (requestError) {
       setError(requestError.message);
@@ -848,6 +768,18 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
       await onReportSpot(payload);
       await refreshMapSpots(selectedDate, selectedLotType);
       setMessage("Occupied report saved.");
+      setError("");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function resolveReport() {
+    if (!activeSpot) return;
+    try {
+      await api.resolveSpotReports(activeSpot.id, { date: selectedDate });
+      await refreshMapSpots(selectedDate, selectedLotType);
+      setMessage("Report resolved.");
       setError("");
     } catch (requestError) {
       setError(requestError.message);
@@ -879,6 +811,7 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
         <label>
           Parking lot
           <select value={selectedLotType} onChange={(event) => setSelectedLotType(event.target.value)}>
+            <option value="all">All Parking Lots</option>
             <option value="general">General Parking Lot</option>
             <option value="staff">Staff Parking Lot</option>
           </select>
@@ -895,7 +828,7 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
         />
 
         <div className="selected-date-banner">
-          <strong>{selectedDate ? formatLongDate(selectedDate) : "Choose a date"} | {formatLotLabel(selectedLotType)}</strong>
+          <strong>{selectedDate ? formatLongDate(selectedDate) : "Choose a date"} | {selectedLotType === "all" ? "All Parking Lots" : formatLotLabel(selectedLotType)}</strong>
         </div>
 
         <div className="map-stage">
@@ -907,20 +840,19 @@ function SecurityMapScreen({ user, spots, onCreateReservation, onCreateRecurring
         user={user}
         spot={activeSpot}
         selectedDate={selectedDate}
-        reservationForm={reservationForm}
-        recurringForm={recurringForm}
-        onReservationChange={(key, value) => setReservationForm((current) => ({ ...current, [key]: value }))}
-        onRecurringChange={(key, value) => setRecurringForm((current) => ({ ...current, [key]: value }))}
         onClose={() => {
           setActiveSpot(null);
+          setSpotReservations([]);
           setMessage("");
           setError("");
         }}
-        onReserve={reserveSpot}
-        onCreateRecurring={reserveRecurring}
         onToggleAvailability={toggleAvailability}
         onReportOccupied={reportOccupied}
-        loading={loading}
+        onLoadReservations={loadSpotReservations}
+        onResolveReport={resolveReport}
+        spotReservations={spotReservations}
+        reservationsLoading={reservationsLoading}
+        detailsLoading={mapLoading}
         message={message}
         error={error}
       />
@@ -1185,9 +1117,9 @@ function ReservationList({ title, reservations, onCancel, onReport, showUser = f
         {reservations.map((reservation) => (
           <div className="reservation-card" key={reservation.id}>
             <div>
-              <strong>{reservation.spot_code}</strong>
+              <strong>Spot: {reservation.spot_code || "Pending assignment"}</strong>
               <p><strong>Booking ID:</strong> #{reservation.id}</p>
-              <p>{formatDateTime(reservation.start_time)} to {formatDateTime(reservation.end_time)}</p>
+              <p><strong>Time:</strong> {formatDateTime(reservation.start_time)} to {formatDateTime(reservation.end_time)}</p>
               {reservation.lot_type ? <small>{reservation.lot_type} lot</small> : null}
               {showUser && reservation.user_name ? <small>{reservation.user_name} | {getRoleLabel(reservation.user_role)}</small> : null}
               {onReport ? (
@@ -1815,7 +1747,18 @@ export default function App() {
     }
   }, [user]);
 
-  const visibleReservations = useMemo(() => reservations, [reservations]);
+  const visibleReservations = useMemo(
+    () => [...reservations].sort((first, second) => new Date(second.start_time).getTime() - new Date(first.start_time).getTime()),
+    [reservations]
+  );
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    const content = document.querySelector(".content");
+    if (content) {
+      content.scrollTop = 0;
+    }
+  }, [user, authMode, activeTab]);
   async function handleCreateReservation(payload) {
     setError("");
     const response = await api.createReservation(payload);
@@ -1934,6 +1877,7 @@ export default function App() {
   function handleLogout() {
     clearSession();
     setUser(null);
+    setActiveTab("map");
     setAuthNotice(null);
     setSpots([]);
     setReservations([]);
@@ -2010,7 +1954,7 @@ export default function App() {
 
       {activeTab === "map" ? (
         isAdminRole(user.role)
-          ? <SecurityMapScreen user={user} spots={spots} onCreateReservation={handleCreateReservation} onCreateRecurring={handleCreateRecurring} onUpdateSpot={handleUpdateSpot} onReportSpot={handleCreateSpotReport} />
+          ? <SecurityMapScreen user={user} spots={spots} onUpdateSpot={handleUpdateSpot} onReportSpot={handleCreateSpotReport} />
           : <LotReservationScreen user={user} settings={settings} onCreateReservation={handleCreateReservation} onCreateRecurring={handleCreateRecurring} />
       ) : null}
       {activeTab === "reservations" ? (

@@ -375,8 +375,20 @@ export function createDatabase(dbPath = config.dbPath) {
       license_plate TEXT DEFAULT '',
       description TEXT DEFAULT '',
       reported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TEXT DEFAULT NULL,
       FOREIGN KEY (spot_id) REFERENCES parking_spots(id) ON DELETE CASCADE,
       FOREIGN KEY (reported_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS spot_daily_unavailability (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      spot_id INTEGER NOT NULL,
+      unavailable_date TEXT NOT NULL,
+      created_by_user_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(spot_id, unavailable_date),
+      FOREIGN KEY (spot_id) REFERENCES parking_spots(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS role_scheduling_rules (
@@ -408,6 +420,7 @@ export function createDatabase(dbPath = config.dbPath) {
   ensureColumn(db, "role_scheduling_rules", "max_daily_active_reservations", "max_daily_active_reservations INTEGER DEFAULT NULL");
   ensureColumn(db, "role_scheduling_rules", "max_reservation_hours", "max_reservation_hours INTEGER DEFAULT NULL");
   ensureColumn(db, "role_scheduling_rules", "approval_mode", "approval_mode TEXT NOT NULL DEFAULT 'approved'");
+  ensureColumn(db, "spot_reports", "resolved_at", "resolved_at TEXT DEFAULT NULL");
 
   db.prepare(`
     UPDATE users
@@ -424,7 +437,6 @@ export function createDatabase(dbPath = config.dbPath) {
     UPDATE users
     SET is_verified = 1,
         verified_at = COALESCE(verified_at, CURRENT_TIMESTAMP)
-    WHERE is_verified IS NULL
   `).run();
 
   db.prepare(`
